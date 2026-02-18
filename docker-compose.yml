@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: dropboxsim
+      POSTGRES_USER: dropbox
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema/sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "dropbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  block_server:
+    build:
+      context: .
+      dockerfile: block_server/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://dropbox:secret@postgres:5432/dropboxsim
+      BLOCK_STORAGE_PATH: /app/data/blocks
+    ports:
+      - "8001:8001"
+    volumes:
+      - block_data:/app/data/blocks
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  metadata_service:
+    build:
+      context: .
+      dockerfile: metadata_service/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://dropbox:secret@postgres:5432/dropboxsim
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8002:8002"
+      - "50052:50052"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  block_data:

@@ -1,0 +1,104 @@
+openapi: 3.0.3
+info:
+  title: Dropbox-sim Metadata API
+  version: 0.1.0
+
+servers:
+  - url: https://api.local
+
+paths:
+  /directories:
+    post:
+      summary: Create a directory
+      operationId: createDirectory
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                parent_folder_id:
+                  type: string
+                name:
+                  type: string
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  folder_id:
+                    type: string
+
+  /files/{file_id}:
+    delete:
+      summary: Delete a file (soft-delete)
+      operationId: deleteFile
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /files/{file_id}/history:
+    get:
+      summary: Get file version history
+      operationId: getFileHistory
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: File history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        version_number: { type: integer }
+                        created_by_device: { type: string }
+                        created_by_user: { type: string }
+                        created_at: { type: string, format: date-time }
+                        size: { type: integer }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

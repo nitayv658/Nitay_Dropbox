@@ -1,0 +1,75 @@
+syntax = "proto3";
+package dropboxsim.internal;
+
+option go_package = "github.com/example/dropboxsim/proto;internalpb";
+
+import "google/protobuf/timestamp.proto";
+
+// Block Server messages and service
+message UploadBlockRequest {
+  string hash = 1; // hex-encoded SHA-256
+  int32 size = 2;
+  bytes data = 3; // up to 4MB per block
+}
+
+message UploadBlockResponse {
+  bool stored = 1; // true if stored, false if deduped
+  string s3_key = 2;
+}
+
+message HasBlockRequest { string hash = 1; }
+message HasBlockResponse { bool exists = 1; string s3_key = 2; }
+
+service BlockServer {
+  rpc UploadBlock(UploadBlockRequest) returns (UploadBlockResponse);
+  rpc HasBlock(HasBlockRequest) returns (HasBlockResponse);
+  rpc GetBlock(HasBlockRequest) returns (stream UploadBlockResponse);
+}
+
+// Metadata service messages and service
+message CreateDirectoryRequest {
+  string user_id = 1;
+  string parent_folder_id = 2; // optional
+  string name = 3;
+}
+message CreateDirectoryResponse { string folder_id = 1; }
+
+message DeleteFileRequest { string user_id = 1; string file_id = 2; }
+message DeleteFileResponse { bool ok = 1; }
+
+message FileHistoryRequest { string file_id = 1; int32 limit = 2; }
+message FileVersion {
+  string id = 1;
+  int64 version_number = 2;
+  string created_by_device = 3;
+  string created_by_user = 4;
+  google.protobuf.Timestamp created_at = 5;
+  int64 size = 6;
+}
+message FileHistoryResponse { repeated FileVersion versions = 1; }
+
+service MetadataService {
+  rpc CreateDirectory(CreateDirectoryRequest) returns (CreateDirectoryResponse);
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  rpc GetFileHistory(FileHistoryRequest) returns (FileHistoryResponse);
+}
+
+// Sync service: given a device cursor, return missing block hashes for a file
+message MissingBlocksRequest {
+  string device_id = 1;
+  string file_id = 2;
+  string from_version_id = 3; // optional - device cursor
+}
+message MissingBlocksResponse { repeated string missing_block_hashes = 1; }
+
+service SyncService {
+  rpc GetMissingBlocks(MissingBlocksRequest) returns (MissingBlocksResponse);
+}
+
+// Sharing service
+message CreateShareLinkRequest { string folder_id = 1; string permission = 2; int64 ttl_seconds = 3; }
+message CreateShareLinkResponse { string token = 1; string expires_at = 2; }
+
+service SharingService {
+  rpc CreateShareLink(CreateShareLinkRequest) returns (CreateShareLinkResponse);
+}
