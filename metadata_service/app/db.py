@@ -281,6 +281,14 @@ async def commit_file_version(
     return {"version_id": version_id, "version_number": next_ver}
 
 
+async def get_file_folder_id(file_id: str) -> Optional[str]:
+    """Return the folder_id owning this file, or None if the file doesn't exist."""
+    return await pool.fetchval(
+        "SELECT folder_id::text FROM files WHERE id = $1::uuid AND deleted = FALSE",
+        file_id,
+    )
+
+
 async def get_current_version_id(file_id: str) -> Optional[str]:
     """Return the UUID of the file's current version, or None."""
     row = await pool.fetchrow(

@@ -141,7 +141,6 @@ class CreateFileRequest(BaseModel):
 
 
 class CommitVersionRequest(BaseModel):
-    user_id: str
     device_id: Optional[str] = None
     block_hashes: List[str] = Field(..., min_length=1)
 
@@ -283,9 +282,18 @@ async def commit_version(
     req: CommitVersionRequest,
     user: dict = Depends(get_current_user),
 ):
+    folder_id = await db.get_file_folder_id(file_id)
+    if folder_id is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    permission = await db.get_folder_permission(user["user_id"], folder_id)
+    if permission not in ("owner", "write"):
+        raise HTTPException(
+            status_code=403, detail="write access to this file's folder required"
+        )
+
     try:
         result = await db.commit_file_version(
-            file_id, req.device_id, req.user_id, req.block_hashes
+            file_id, req.device_id, user["user_id"], req.block_hashes
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
