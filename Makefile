@@ -34,6 +34,14 @@ generate-proto:
 	sed -i.bak 's/^import internal_pb2 as internal__pb2$$/from . import internal_pb2 as internal__pb2/' \
 		metadata_service/app/internal_pb2_grpc.py
 	rm -f metadata_service/app/internal_pb2_grpc.py.bak
+	$(PYTHON) -m grpc_tools.protoc \
+		-I proto \
+		--python_out=proto \
+		--grpc_python_out=proto \
+		proto/internal.proto
+	sed -i.bak 's/^import internal_pb2 as internal__pb2$$/from . import internal_pb2 as internal__pb2/' \
+		proto/internal_pb2_grpc.py
+	rm -f proto/internal_pb2_grpc.py.bak
 
 ## ── Tests ────────────────────────────────────────────────────────────────────
 
