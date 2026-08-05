@@ -30,6 +30,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from . import db
 from . import internal_pb2, internal_pb2_grpc
 from .config import settings
+from .grpc_auth import JWTAuthInterceptor, get_authenticated_user
 
 log = structlog.get_logger()
 
@@ -49,9 +50,19 @@ class MetadataServiceServicer(internal_pb2_grpc.MetadataServiceServicer):
     async def CreateDirectory(self, request, context):
         if not request.name:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "name is required")
+        user = get_authenticated_user()
+        if request.parent_folder_id:
+            permission = await db.get_folder_permission(
+                user["user_id"], request.parent_folder_id
+            )
+            if permission not in ("owner", "write"):
+                await context.abort(
+                    grpc.StatusCode.PERMISSION_DENIED,
+                    "write access to parent_folder_id required",
+                )
         try:
             folder_id = await db.create_directory(
-                request.user_id,
+                user["user_id"],
                 request.parent_folder_id or None,
                 request.name,
             )
@@ -62,8 +73,9 @@ class MetadataServiceServicer(internal_pb2_grpc.MetadataServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(exc))
 
     async def DeleteFile(self, request, context):
+        user = get_authenticated_user()
         try:
-            ok = await db.delete_file(request.user_id, request.file_id)
+            ok = await db.delete_file(user["user_id"], request.file_id)
             if not ok:
                 await context.abort(
                     grpc.StatusCode.NOT_FOUND, "file not found or not owned by user"
@@ -76,6 +88,16 @@ class MetadataServiceServicer(internal_pb2_grpc.MetadataServiceServicer):
 
     async def GetFileHistory(self, request, context):
         limit = max(1, min(request.limit if request.limit > 0 else 50, 200))
+        user = get_authenticated_user()
+        folder_id = await db.get_file_folder_id(request.file_id)
+        if folder_id is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "file not found")
+        permission = await db.get_folder_permission(user["user_id"], folder_id)
+        if permission is None:
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "access to this file's folder required",
+            )
         try:
             rows = await db.get_file_history(request.file_id, limit)
             versions = [
@@ -156,7 +178,7 @@ class SharingServiceServicer(internal_pb2_grpc.SharingServiceServicer):
 async def serve() -> None:
     await db.init_db()
 
-    server = grpc.aio.server()
+    server = grpc.aio.server(interceptors=[JWTAuthInterceptor()])
 
     internal_pb2_grpc.add_MetadataServiceServicer_to_server(
         MetadataServiceServicer(), server

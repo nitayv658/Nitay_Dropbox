@@ -10,9 +10,10 @@ in conftest.py) — no mocking of the gRPC transport itself.
 import grpc
 import pytest
 
+import metadata_service.app.db as mdb
 from metadata_service.app import internal_pb2, internal_pb2_grpc
 from metadata_service.app.auth import create_access_token
-from tests.conftest import seed_user
+from tests.conftest import seed_folder, seed_user
 
 
 def _bearer_metadata(token: str):
@@ -58,3 +59,193 @@ async def test_call_with_valid_token_succeeds(grpc_server_address, db_pool):
         )
 
     assert resp.folder_id
+
+
+# ─── MetadataService.CreateDirectory ───────────────────────────────────────────
+
+
+async def test_grpc_create_directory_owner_is_authenticated_user(
+    grpc_server_address, db_pool
+):
+    user = await seed_user(db_pool, "grpc-owner@example.com")
+    token = create_access_token(user, "grpc-owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        resp = await stub.CreateDirectory(
+            internal_pb2.CreateDirectoryRequest(name="root"),
+            metadata=_bearer_metadata(token),
+        )
+
+    owner = await db_pool.fetchval(
+        "SELECT owner_id::text FROM folders WHERE id = $1::uuid", resp.folder_id
+    )
+    assert owner == user
+
+
+async def test_grpc_create_directory_ignores_spoofed_user_id(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        resp = await stub.CreateDirectory(
+            internal_pb2.CreateDirectoryRequest(user_id=stranger, name="root"),
+            metadata=_bearer_metadata(token),
+        )
+
+    folder_owner = await db_pool.fetchval(
+        "SELECT owner_id::text FROM folders WHERE id = $1::uuid", resp.folder_id
+    )
+    assert folder_owner == owner, "owner must be the token identity, not the spoofed request field"
+
+
+async def test_grpc_create_subdirectory_denied_without_parent_access(
+    grpc_server_address, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    parent = await seed_folder(db_pool, owner)
+    token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.CreateDirectory(
+                internal_pb2.CreateDirectoryRequest(parent_folder_id=parent, name="sub"),
+                metadata=_bearer_metadata(token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_create_subdirectory_allowed_for_parent_owner(
+    grpc_server_address, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    parent = await seed_folder(db_pool, owner)
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        resp = await stub.CreateDirectory(
+            internal_pb2.CreateDirectoryRequest(parent_folder_id=parent, name="sub"),
+            metadata=_bearer_metadata(token),
+        )
+
+    assert resp.folder_id
+
+
+# ─── MetadataService.DeleteFile ────────────────────────────────────────────────
+
+
+async def test_grpc_delete_file_denied_for_non_owner(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    stranger_token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.DeleteFile(
+                internal_pb2.DeleteFileRequest(file_id=file_id),
+                metadata=_bearer_metadata(stranger_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+async def test_grpc_delete_file_ignores_spoofed_user_id(grpc_server_address, db_pool):
+    """Regression test for the IDOR: a spoofed user_id in the request must not authorize deletion."""
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    stranger_token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.DeleteFile(
+                internal_pb2.DeleteFileRequest(user_id=owner, file_id=file_id),
+                metadata=_bearer_metadata(stranger_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+    still_active = await db_pool.fetchval(
+        "SELECT NOT deleted FROM files WHERE id = $1::uuid", file_id
+    )
+    assert still_active is True, "file must not be deleted by a spoofed user_id field"
+
+
+async def test_grpc_delete_file_allowed_for_owner(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        resp = await stub.DeleteFile(
+            internal_pb2.DeleteFileRequest(file_id=file_id),
+            metadata=_bearer_metadata(token),
+        )
+
+    assert resp.ok is True
+
+
+# ─── MetadataService.GetFileHistory ────────────────────────────────────────────
+
+
+async def test_grpc_file_history_denied_without_folder_access(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    stranger_token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.GetFileHistory(
+                internal_pb2.FileHistoryRequest(file_id=file_id),
+                metadata=_bearer_metadata(stranger_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_file_history_allowed_for_owner(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        resp = await stub.GetFileHistory(
+            internal_pb2.FileHistoryRequest(file_id=file_id),
+            metadata=_bearer_metadata(token),
+        )
+
+    assert list(resp.versions) == []
+
+
+async def test_grpc_file_history_denied_for_nonexistent_file(grpc_server_address, db_pool):
+    user = await seed_user(db_pool)
+    token = create_access_token(user, "x@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.MetadataServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.GetFileHistory(
+                internal_pb2.FileHistoryRequest(
+                    file_id="00000000-0000-0000-0000-000000000099"
+                ),
+                metadata=_bearer_metadata(token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
