@@ -169,3 +169,67 @@ async def test_create_root_directory_without_parent_requires_no_permission_check
     resp = await meta_client.post("/directories", json={"name": "root"})
 
     assert resp.status_code == 201
+
+
+# ─── POST /files ────────────────────────────────────────────────────────────
+
+
+async def test_create_file_denied_without_folder_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(stranger)
+
+    resp = await meta_client.post(
+        "/files", json={"folder_id": folder, "name": "secret.txt"}
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_create_file_allowed_for_folder_owner(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+
+    resp = await meta_client.post(
+        "/files", json={"folder_id": folder, "name": "notes.txt"}
+    )
+
+    assert resp.status_code == 201
+
+
+async def test_create_file_allowed_with_shared_write_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "write", owner)
+    override_user(grantee)
+
+    resp = await meta_client.post(
+        "/files", json={"folder_id": folder, "name": "shared.txt"}
+    )
+
+    assert resp.status_code == 201
+
+
+async def test_create_file_denied_with_shared_read_only_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "read", owner)
+    override_user(grantee)
+
+    resp = await meta_client.post(
+        "/files", json={"folder_id": folder, "name": "readonly.txt"}
+    )
+
+    assert resp.status_code == 403

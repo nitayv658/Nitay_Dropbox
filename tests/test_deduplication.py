@@ -65,7 +65,7 @@ async def test_ref_count_increments_on_dedup(block_client, db_pool):
 
 
 async def test_two_users_same_file_one_storage_two_metadata(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     Full deduplication scenario:
@@ -92,9 +92,10 @@ async def test_two_users_same_file_one_storage_two_metadata(
     assert r2.json()["stored"] is False
 
     # Create file + version for User A
+    override_user(user_a)
     fa = (
         await meta_client.post(
-            "/files", json={"user_id": user_a, "folder_id": folder_a, "name": "image.png"}
+            "/files", json={"folder_id": folder_a, "name": "image.png"}
         )
     ).json()["file_id"]
     await meta_client.post(
@@ -103,9 +104,10 @@ async def test_two_users_same_file_one_storage_two_metadata(
     )
 
     # Create file + version for User B
+    override_user(user_b)
     fb = (
         await meta_client.post(
-            "/files", json={"user_id": user_b, "folder_id": folder_b, "name": "image.png"}
+            "/files", json={"folder_id": folder_b, "name": "image.png"}
         )
     ).json()["file_id"]
     await meta_client.post(

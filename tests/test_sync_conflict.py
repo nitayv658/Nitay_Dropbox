@@ -43,7 +43,7 @@ async def _commit(meta_client, file_id: str, user_id: str, hash_hex: str):
 
 
 async def test_concurrent_writes_both_succeed(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     Two devices commit different versions of the same file at the same time.
@@ -55,10 +55,11 @@ async def test_concurrent_writes_both_succeed(
     h_a, _ = await _upload_block(block_client)
     h_b, _ = await _upload_block(block_client)
 
+    override_user(user)
     file_id = (
         await meta_client.post(
             "/files",
-            json={"user_id": user, "folder_id": folder, "name": "config.json"},
+            json={"folder_id": folder, "name": "config.json"},
         )
     ).json()["file_id"]
 
@@ -72,7 +73,7 @@ async def test_concurrent_writes_both_succeed(
 
 
 async def test_no_data_loss_sequential_writes(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     Sequential writes (simulating 'last writer wins') preserve both versions
@@ -84,10 +85,11 @@ async def test_no_data_loss_sequential_writes(
     h_a, _ = await _upload_block(block_client)
     h_b, _ = await _upload_block(block_client)
 
+    override_user(user)
     file_id = (
         await meta_client.post(
             "/files",
-            json={"user_id": user, "folder_id": folder, "name": "config.json"},
+            json={"folder_id": folder, "name": "config.json"},
         )
     ).json()["file_id"]
 
@@ -103,7 +105,7 @@ async def test_no_data_loss_sequential_writes(
 
 
 async def test_concurrent_version_numbers_unique(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     Regression test for the FOR UPDATE race condition fix.
@@ -118,10 +120,11 @@ async def test_concurrent_version_numbers_unique(
 
     hashes = [(await _upload_block(block_client))[0] for _ in range(N)]
 
+    override_user(user)
     file_id = (
         await meta_client.post(
             "/files",
-            json={"user_id": user, "folder_id": folder, "name": "shared.txt"},
+            json={"folder_id": folder, "name": "shared.txt"},
         )
     ).json()["file_id"]
 
@@ -147,16 +150,17 @@ async def test_concurrent_version_numbers_unique(
 
 
 async def test_history_is_ordered_newest_first(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """File history endpoint returns versions in descending version_number order."""
     user = await seed_user(db_pool)
     folder = await seed_folder(db_pool, user)
 
+    override_user(user)
     file_id = (
         await meta_client.post(
             "/files",
-            json={"user_id": user, "folder_id": folder, "name": "ordered.txt"},
+            json={"folder_id": folder, "name": "ordered.txt"},
         )
     ).json()["file_id"]
 
