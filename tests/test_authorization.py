@@ -7,10 +7,25 @@ or None when the caller has neither. This helper is the foundation for closing
 the IDOR gaps in metadata_service's REST endpoints.
 """
 
+import hashlib
+import os
+
 import pytest
 
 import metadata_service.app.db as mdb
 from tests.conftest import seed_folder, seed_user
+
+
+async def _upload_block(block_client, size_kb: int = 64) -> str:
+    data = os.urandom(size_kb * 1024)
+    h = hashlib.sha256(data).hexdigest()
+    resp = await block_client.post(
+        "/blocks/upload",
+        params={"hash": h, "size": len(data)},
+        files={"file": ("block", data, "application/octet-stream")},
+    )
+    assert resp.status_code == 200
+    return h
 
 
 @pytest.fixture(autouse=True)
@@ -233,3 +248,115 @@ async def test_create_file_denied_with_shared_read_only_access(
     )
 
     assert resp.status_code == 403
+
+
+# ─── POST /files/{file_id}/versions ────────────────────────────────────────────
+
+
+async def test_commit_version_denied_without_folder_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    override_user(stranger)
+    resp = await meta_client.post(
+        f"/files/{file_id}/versions",
+        json={"block_hashes": ["0" * 64]},
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_commit_version_allowed_for_folder_owner(
+    meta_client, block_client, override_user, in_memory_storage, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+    h = await _upload_block(block_client)
+
+    resp = await meta_client.post(
+        f"/files/{file_id}/versions", json={"block_hashes": [h]}
+    )
+
+    assert resp.status_code == 201
+
+
+async def test_commit_version_allowed_with_shared_write_access(
+    meta_client, block_client, override_user, in_memory_storage, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "write", owner)
+
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+    h = await _upload_block(block_client)
+
+    override_user(grantee)
+    resp = await meta_client.post(
+        f"/files/{file_id}/versions", json={"block_hashes": [h]}
+    )
+
+    assert resp.status_code == 201
+
+
+async def test_commit_version_denied_with_shared_read_only_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "read", owner)
+
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    override_user(grantee)
+    resp = await meta_client.post(
+        f"/files/{file_id}/versions",
+        json={"block_hashes": ["0" * 64]},
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_commit_version_ignores_spoofed_user_id_in_body(
+    meta_client, block_client, override_user, in_memory_storage, db_pool
+):
+    """Regression test for the IDOR: created_by_user must come from the token."""
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+    h = await _upload_block(block_client)
+
+    resp = await meta_client.post(
+        f"/files/{file_id}/versions",
+        json={"user_id": stranger, "block_hashes": [h]},
+    )
+
+    assert resp.status_code == 201
+    version_id = resp.json()["version_id"]
+    created_by = await db_pool.fetchval(
+        "SELECT created_by_user::text FROM file_versions WHERE id = $1::uuid",
+        version_id,
+    )
+    assert created_by == owner, "created_by_user must be the token identity, not the spoofed body field"
