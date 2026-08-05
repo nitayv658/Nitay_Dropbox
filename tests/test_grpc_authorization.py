@@ -343,3 +343,61 @@ async def test_grpc_get_missing_blocks_denied_for_nonexistent_device(
             )
 
     assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+# ─── SharingService.CreateShareLink ────────────────────────────────────────────
+
+
+async def test_grpc_create_share_link_denied_for_non_owner(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    stranger_token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SharingServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.CreateShareLink(
+                internal_pb2.CreateShareLinkRequest(folder_id=folder, permission="read"),
+                metadata=_bearer_metadata(stranger_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_create_share_link_denied_for_write_grantee(grpc_server_address, db_pool):
+    """Having write access to a folder doesn't grant the right to create share links for it."""
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "write", owner)
+    grantee_token = create_access_token(grantee, "grantee@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SharingServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.CreateShareLink(
+                internal_pb2.CreateShareLinkRequest(folder_id=folder, permission="read"),
+                metadata=_bearer_metadata(grantee_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_create_share_link_allowed_for_owner(grpc_server_address, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SharingServiceStub(channel)
+        resp = await stub.CreateShareLink(
+            internal_pb2.CreateShareLinkRequest(folder_id=folder, permission="read"),
+            metadata=_bearer_metadata(token),
+        )
+
+    assert resp.token
+    created_by = await db_pool.fetchval(
+        "SELECT created_by::text FROM share_links WHERE token = $1", resp.token
+    )
+    assert created_by == owner
