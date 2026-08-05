@@ -20,6 +20,14 @@ def _bearer_metadata(token: str):
     return (("authorization", f"Bearer {token}"),)
 
 
+async def _seed_device(pool, user_id: str, name: str = "device") -> str:
+    return await pool.fetchval(
+        "INSERT INTO devices (user_id, name) VALUES ($1::uuid, $2) RETURNING id::text",
+        user_id,
+        name,
+    )
+
+
 async def test_call_without_token_is_rejected_as_unauthenticated(
     grpc_server_address, db_pool
 ):
@@ -249,3 +257,89 @@ async def test_grpc_file_history_denied_for_nonexistent_file(grpc_server_address
             )
 
     assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+# ─── SyncService.GetMissingBlocks ──────────────────────────────────────────────
+
+
+async def test_grpc_get_missing_blocks_denied_for_device_not_owned_by_caller(
+    grpc_server_address, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    device_id = await _seed_device(db_pool, owner)
+    stranger_token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SyncServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.GetMissingBlocks(
+                internal_pb2.MissingBlocksRequest(device_id=device_id, file_id=file_id),
+                metadata=_bearer_metadata(stranger_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_get_missing_blocks_denied_without_folder_access(
+    grpc_server_address, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    # stranger's own device, but stranger has no access to owner's folder/file
+    device_id = await _seed_device(db_pool, stranger)
+    stranger_token = create_access_token(stranger, "stranger@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SyncServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.GetMissingBlocks(
+                internal_pb2.MissingBlocksRequest(device_id=device_id, file_id=file_id),
+                metadata=_bearer_metadata(stranger_token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_get_missing_blocks_allowed_for_owner_with_own_device(
+    grpc_server_address, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    device_id = await _seed_device(db_pool, owner)
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SyncServiceStub(channel)
+        resp = await stub.GetMissingBlocks(
+            internal_pb2.MissingBlocksRequest(device_id=device_id, file_id=file_id),
+            metadata=_bearer_metadata(token),
+        )
+
+    assert list(resp.missing_block_hashes) == []
+
+
+async def test_grpc_get_missing_blocks_denied_for_nonexistent_device(
+    grpc_server_address, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    file_id = await mdb.create_file(folder, "doc.txt")
+    token = create_access_token(owner, "owner@example.com")
+
+    async with grpc.aio.insecure_channel(grpc_server_address) as channel:
+        stub = internal_pb2_grpc.SyncServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.GetMissingBlocks(
+                internal_pb2.MissingBlocksRequest(
+                    device_id="00000000-0000-0000-0000-000000000099", file_id=file_id
+                ),
+                metadata=_bearer_metadata(token),
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
