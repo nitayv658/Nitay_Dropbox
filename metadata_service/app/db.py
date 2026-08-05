@@ -80,6 +80,29 @@ async def get_user_by_email(email: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+# ─── Authorization ────────────────────────────────────────────────────────────
+
+
+async def get_folder_permission(user_id: str, folder_id: str) -> Optional[str]:
+    """
+    Return the caller's access level for a folder: 'owner' (via folders.owner_id),
+    the granted permission from folder_shares ('read'/'write'), or None if the
+    folder doesn't exist or the user has neither ownership nor a share.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT CASE WHEN f.owner_id = $1::uuid THEN 'owner' ELSE fs.permission END AS permission
+        FROM folders f
+        LEFT JOIN folder_shares fs
+            ON fs.folder_id = f.id AND fs.grantee_user_id = $1::uuid
+        WHERE f.id = $2::uuid
+        """,
+        user_id,
+        folder_id,
+    )
+    return row["permission"] if row else None
+
+
 # ─── Metadata ─────────────────────────────────────────────────────────────────
 
 
