@@ -3,6 +3,7 @@ JWT authentication for the Metadata Service.
 
 Provides:
   - create_access_token()    — sign a JWT with user claims
+  - decode_token()           — framework-agnostic JWT validation (FastAPI + gRPC)
   - get_current_user()       — FastAPI dependency that validates Bearer tokens
   - hash_password()          — bcrypt password hashing
   - verify_password()        — bcrypt password verification
@@ -55,22 +56,40 @@ def create_access_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+class AuthError(Exception):
+    """Raised by decode_token() when a bearer token is missing or invalid."""
+
+
+def decode_token(token: Optional[str]) -> dict:
+    """
+    Validate a JWT and return {"user_id": ..., "email": ...}.
+    Framework-agnostic — used by both the FastAPI dependency below and the
+    gRPC auth interceptor (metadata_service/app/grpc_auth.py).
+    Raises AuthError if the token is missing, malformed, or expired.
+    """
+    if not token:
+        raise AuthError("missing token")
+    try:
+        payload = jwt.decode(
+            token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
+        )
+    except JWTError:
+        raise AuthError("invalid or expired token")
+    user_id: Optional[str] = payload.get("sub")
+    if user_id is None:
+        raise AuthError("token missing subject claim")
+    return {"user_id": user_id, "email": payload.get("email")}
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     """
     FastAPI dependency — validates a Bearer JWT and returns user claims.
     Inject into route handlers:  user: dict = Depends(get_current_user)
     """
     try:
-        payload = jwt.decode(
-            token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
-        )
-        user_id: Optional[str] = payload.get("sub")
-        email: Optional[str] = payload.get("email")
-        if user_id is None:
-            raise _CREDENTIALS_EXCEPTION
-    except JWTError:
+        return decode_token(token)
+    except AuthError:
         raise _CREDENTIALS_EXCEPTION
-    return {"user_id": user_id, "email": email}
 
 
 # ─── Service-to-service API key ───────────────────────────────────────────────

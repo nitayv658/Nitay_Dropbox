@@ -11,6 +11,8 @@ giving each test a perfectly clean slate without the overhead of schema recreati
 """
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +31,42 @@ TEST_DB_URL = os.getenv(
 _SCHEMA_SQL = (
     Path(__file__).parent.parent / "schema" / "sql" / "schema.sql"
 ).read_text()
+
+_REPO_ROOT = Path(__file__).parent.parent
+
+
+def _ensure_grpc_stubs() -> None:
+    """
+    Generate metadata_service/app/internal_pb2*.py from proto/internal.proto
+    if they're not already present, so gRPC test modules can import them at
+    collection time. Mirrors `make generate-proto`, including the sed-style
+    patch for grpc_tools' flat `import internal_pb2` (see Makefile).
+    """
+    grpc_stub = _REPO_ROOT / "metadata_service" / "app" / "internal_pb2_grpc.py"
+    if grpc_stub.exists():
+        return
+
+    subprocess.run(
+        [
+            sys.executable, "-m", "grpc_tools.protoc",
+            "-I", "proto",
+            "--python_out=metadata_service/app",
+            "--grpc_python_out=metadata_service/app",
+            "proto/internal.proto",
+        ],
+        cwd=_REPO_ROOT,
+        check=True,
+    )
+    text = grpc_stub.read_text()
+    grpc_stub.write_text(
+        text.replace(
+            "import internal_pb2 as internal__pb2",
+            "from . import internal_pb2 as internal__pb2",
+        )
+    )
+
+
+_ensure_grpc_stubs()
 
 
 # ─── Database pool ────────────────────────────────────────────────────────────
@@ -168,6 +206,46 @@ async def override_user(meta_client):
         }
 
     return _set
+
+
+# ─── gRPC test server ──────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture
+async def grpc_server_address(db_pool):
+    """
+    Starts metadata_service's gRPC server (with JWTAuthInterceptor wired) on an
+    ephemeral localhost port, wired to the shared test db pool. Yields the
+    "host:port" address for a test client channel.
+    """
+    import grpc
+
+    import metadata_service.app.db as mdb
+    from metadata_service.app import internal_pb2_grpc
+    from metadata_service.app.grpc_auth import JWTAuthInterceptor
+    from metadata_service.app.grpc_server import (
+        MetadataServiceServicer,
+        SharingServiceServicer,
+        SyncServiceServicer,
+    )
+
+    mdb.pool = db_pool
+
+    server = grpc.aio.server(interceptors=[JWTAuthInterceptor()])
+    internal_pb2_grpc.add_MetadataServiceServicer_to_server(
+        MetadataServiceServicer(), server
+    )
+    internal_pb2_grpc.add_SyncServiceServicer_to_server(SyncServiceServicer(), server)
+    internal_pb2_grpc.add_SharingServiceServicer_to_server(
+        SharingServiceServicer(), server
+    )
+
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    try:
+        yield f"127.0.0.1:{port}"
+    finally:
+        await server.stop(None)
 
 
 # ─── Seed helpers (plain async functions — call from tests directly) ──────────

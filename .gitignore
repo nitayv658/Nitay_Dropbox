@@ -4,6 +4,10 @@
 # Local block storage
 data/
 
+# Generated protobuf/gRPC stubs (built by `make generate-proto`)
+**/internal_pb2.py
+**/internal_pb2_grpc.py
+
 # Python
 __pycache__/
 *.py[cod]
