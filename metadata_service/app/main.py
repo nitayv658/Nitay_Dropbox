@@ -157,7 +157,6 @@ class CommitVersionRequest(BaseModel):
 class GrantShareRequest(BaseModel):
     grantee_user_id: str
     permission: str = Field(..., pattern="^(read|write)$")
-    granted_by: str
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -315,8 +314,11 @@ async def grant_folder_access(
     req: GrantShareRequest,
     user: dict = Depends(get_current_user),
 ):
+    permission = await db.get_folder_permission(user["user_id"], folder_id)
+    if permission != "owner":
+        raise HTTPException(status_code=403, detail="folder owner access required")
     await db.grant_folder_access(
-        folder_id, req.grantee_user_id, req.permission, req.granted_by
+        folder_id, req.grantee_user_id, req.permission, user["user_id"]
     )
     return {"ok": True}
 
