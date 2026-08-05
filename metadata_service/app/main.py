@@ -238,10 +238,9 @@ async def create_directory(
 @app.delete("/files/{file_id}")
 async def delete_file(
     file_id: str,
-    user_id: str,
     user: dict = Depends(get_current_user),
 ):
-    ok = await db.delete_file(user_id, file_id)
+    ok = await db.delete_file(user["user_id"], file_id)
     if not ok:
         raise HTTPException(status_code=404, detail="file not found or not owned by user")
     log.info("file_deleted", file_id=file_id)

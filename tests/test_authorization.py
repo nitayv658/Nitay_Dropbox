@@ -360,3 +360,56 @@ async def test_commit_version_ignores_spoofed_user_id_in_body(
         version_id,
     )
     assert created_by == owner, "created_by_user must be the token identity, not the spoofed body field"
+
+
+# ─── DELETE /files/{file_id} ───────────────────────────────────────────────────
+
+
+async def test_delete_file_denied_for_non_owner(meta_client, override_user, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    override_user(stranger)
+    resp = await meta_client.delete(f"/files/{file_id}")
+
+    assert resp.status_code == 404
+
+
+async def test_delete_file_ignores_spoofed_user_id_query_param(
+    meta_client, override_user, db_pool
+):
+    """Regression test for the IDOR: a spoofed user_id query param must not authorize deletion."""
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    override_user(stranger)
+    resp = await meta_client.delete(f"/files/{file_id}", params={"user_id": owner})
+
+    assert resp.status_code == 404
+    still_active = await db_pool.fetchval(
+        "SELECT NOT deleted FROM files WHERE id = $1::uuid", file_id
+    )
+    assert still_active is True, "file must not be deleted by a spoofed query param"
+
+
+async def test_delete_file_allowed_for_owner(meta_client, override_user, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    resp = await meta_client.delete(f"/files/{file_id}")
+
+    assert resp.status_code == 200
