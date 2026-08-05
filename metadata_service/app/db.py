@@ -170,7 +170,7 @@ async def get_file_history(file_id: str, limit: int) -> List[dict]:
 # ─── File / Version ───────────────────────────────────────────────────────────
 
 
-async def create_file(user_id: str, folder_id: str, name: str) -> str:
+async def create_file(folder_id: str, name: str) -> str:
     """Insert a new file record (no version yet). Returns the file UUID."""
     row = await pool.fetchrow(
         """

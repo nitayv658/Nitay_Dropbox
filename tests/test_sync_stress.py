@@ -41,7 +41,7 @@ async def _seed_device(pool, user_id: str, name: str) -> str:
 
 
 async def test_five_devices_get_correct_missing_blocks(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     5 devices (all on version 0 / no cursor) query for missing blocks concurrently.
@@ -57,9 +57,10 @@ async def test_five_devices_get_correct_missing_blocks(
     # Upload 3 blocks and commit a version
     hashes = [await _upload_block(block_client) for _ in range(3)]
 
+    override_user(user)
     file_id = (
         await meta_client.post(
-            "/files", json={"user_id": user, "folder_id": folder, "name": "shared.bin"}
+            "/files", json={"folder_id": folder, "name": "shared.bin"}
         )
     ).json()["file_id"]
 
@@ -85,7 +86,7 @@ async def test_five_devices_get_correct_missing_blocks(
 
 
 async def test_device_cursor_advances_eliminates_missing_blocks(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     After a device syncs (cursor advanced to current version),
@@ -99,9 +100,10 @@ async def test_device_cursor_advances_eliminates_missing_blocks(
     folder = await seed_folder(db_pool, user)
 
     h = await _upload_block(block_client)
+    override_user(user)
     file_id = (
         await meta_client.post(
-            "/files", json={"user_id": user, "folder_id": folder, "name": "doc.txt"}
+            "/files", json={"folder_id": folder, "name": "doc.txt"}
         )
     ).json()["file_id"]
 
@@ -126,7 +128,7 @@ async def test_device_cursor_advances_eliminates_missing_blocks(
 
 
 async def test_new_version_appears_as_missing_after_cursor_set(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     Device is up to date on version 1. A new version 2 is committed.
@@ -142,9 +144,10 @@ async def test_new_version_appears_as_missing_after_cursor_set(
 
     # Version 1: one shared block
     h_shared = await _upload_block(block_client)
+    override_user(user)
     file_id = (
         await meta_client.post(
-            "/files", json={"user_id": user, "folder_id": folder, "name": "evolving.txt"}
+            "/files", json={"folder_id": folder, "name": "evolving.txt"}
         )
     ).json()["file_id"]
 
@@ -174,7 +177,7 @@ async def test_new_version_appears_as_missing_after_cursor_set(
 
 
 async def test_ten_concurrent_commits_all_unique_versions(
-    block_client, meta_client, db_pool, in_memory_storage
+    block_client, meta_client, override_user, db_pool, in_memory_storage
 ):
     """
     10 simultaneous version commits to the same file.
@@ -187,10 +190,11 @@ async def test_ten_concurrent_commits_all_unique_versions(
 
     hashes = [await _upload_block(block_client) for _ in range(N)]
 
+    override_user(user)
     file_id = (
         await meta_client.post(
             "/files",
-            json={"user_id": user, "folder_id": folder, "name": "contested.bin"},
+            json={"folder_id": folder, "name": "contested.bin"},
         )
     ).json()["file_id"]
 

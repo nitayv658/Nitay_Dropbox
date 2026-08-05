@@ -136,7 +136,6 @@ class CreateDirectoryRequest(BaseModel):
 
 
 class CreateFileRequest(BaseModel):
-    user_id: str
     folder_id: str
     name: str = Field(..., min_length=1, max_length=255)
 
@@ -270,7 +269,10 @@ async def create_file(
     req: CreateFileRequest,
     user: dict = Depends(get_current_user),
 ):
-    file_id = await db.create_file(req.user_id, req.folder_id, req.name)
+    permission = await db.get_folder_permission(user["user_id"], req.folder_id)
+    if permission not in ("owner", "write"):
+        raise HTTPException(status_code=403, detail="write access to folder_id required")
+    file_id = await db.create_file(req.folder_id, req.name)
     log.info("file_created", file_id=file_id)
     return {"file_id": file_id}
 
