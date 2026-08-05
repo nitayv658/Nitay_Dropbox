@@ -473,3 +473,92 @@ async def test_file_history_denied_for_nonexistent_file(meta_client, override_us
     resp = await meta_client.get("/files/00000000-0000-0000-0000-000000000099/history")
 
     assert resp.status_code == 404
+
+
+# ─── POST /folders/{folder_id}/shares ──────────────────────────────────────────
+
+
+async def test_grant_folder_access_denied_for_non_owner(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    someone_else = await seed_user(db_pool, "someone_else@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(stranger)
+
+    resp = await meta_client.post(
+        f"/folders/{folder}/shares",
+        json={"grantee_user_id": someone_else, "permission": "read"},
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_grant_folder_access_denied_for_write_grantee(
+    meta_client, override_user, db_pool
+):
+    """Having write access to a folder doesn't grant the right to re-share it."""
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    someone_else = await seed_user(db_pool, "someone_else@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "write", owner)
+    override_user(grantee)
+
+    resp = await meta_client.post(
+        f"/folders/{folder}/shares",
+        json={"grantee_user_id": someone_else, "permission": "read"},
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_grant_folder_access_allowed_for_owner(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+
+    resp = await meta_client.post(
+        f"/folders/{folder}/shares",
+        json={"grantee_user_id": grantee, "permission": "read"},
+    )
+
+    assert resp.status_code == 201
+    created_by = await db_pool.fetchval(
+        "SELECT created_by::text FROM folder_shares WHERE folder_id = $1::uuid AND grantee_user_id = $2::uuid",
+        folder,
+        grantee,
+    )
+    assert created_by == owner
+
+
+async def test_grant_folder_access_ignores_spoofed_granted_by(
+    meta_client, override_user, db_pool
+):
+    """Regression test for the IDOR: a spoofed granted_by in the body must be ignored."""
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    someone_else = await seed_user(db_pool, "someone_else@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+
+    resp = await meta_client.post(
+        f"/folders/{folder}/shares",
+        json={
+            "grantee_user_id": grantee,
+            "permission": "read",
+            "granted_by": someone_else,
+        },
+    )
+
+    assert resp.status_code == 201
+    created_by = await db_pool.fetchval(
+        "SELECT created_by::text FROM folder_shares WHERE folder_id = $1::uuid AND grantee_user_id = $2::uuid",
+        folder,
+        grantee,
+    )
+    assert created_by == owner, "created_by must be the token identity, not the spoofed body field"
