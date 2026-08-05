@@ -255,6 +255,12 @@ async def get_file_history(
 ):
     if limit < 1 or limit > 200:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+    folder_id = await db.get_file_folder_id(file_id)
+    if folder_id is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    permission = await db.get_folder_permission(user["user_id"], folder_id)
+    if permission is None:
+        raise HTTPException(status_code=403, detail="access to this file's folder required")
     versions = await db.get_file_history(file_id, limit)
     return {"versions": [_serialize(v) for v in versions]}
 

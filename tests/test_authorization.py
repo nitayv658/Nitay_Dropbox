@@ -413,3 +413,63 @@ async def test_delete_file_allowed_for_owner(meta_client, override_user, db_pool
     resp = await meta_client.delete(f"/files/{file_id}")
 
     assert resp.status_code == 200
+
+
+# ─── GET /files/{file_id}/history ──────────────────────────────────────────────
+
+
+async def test_file_history_denied_without_folder_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    stranger = await seed_user(db_pool, "stranger@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    override_user(stranger)
+    resp = await meta_client.get(f"/files/{file_id}/history")
+
+    assert resp.status_code == 403
+
+
+async def test_file_history_allowed_for_owner(meta_client, override_user, db_pool):
+    owner = await seed_user(db_pool, "owner@example.com")
+    folder = await seed_folder(db_pool, owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    resp = await meta_client.get(f"/files/{file_id}/history")
+
+    assert resp.status_code == 200
+
+
+async def test_file_history_allowed_with_shared_read_access(
+    meta_client, override_user, db_pool
+):
+    owner = await seed_user(db_pool, "owner@example.com")
+    grantee = await seed_user(db_pool, "grantee@example.com")
+    folder = await seed_folder(db_pool, owner)
+    await mdb.grant_folder_access(folder, grantee, "read", owner)
+    override_user(owner)
+    file_id = (
+        await meta_client.post("/files", json={"folder_id": folder, "name": "doc.txt"})
+    ).json()["file_id"]
+
+    override_user(grantee)
+    resp = await meta_client.get(f"/files/{file_id}/history")
+
+    assert resp.status_code == 200
+
+
+async def test_file_history_denied_for_nonexistent_file(meta_client, override_user, db_pool):
+    user = await seed_user(db_pool)
+    override_user(user)
+
+    resp = await meta_client.get("/files/00000000-0000-0000-0000-000000000099/history")
+
+    assert resp.status_code == 404
