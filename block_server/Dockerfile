@@ -13,6 +13,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application code
 COPY block_server/ ./block_server/
 COPY schema/ ./schema/
+COPY proto/ ./proto/
 
 # Non-root user for security
 RUN useradd -m appuser && chown -R appuser /app
