@@ -150,6 +150,26 @@ async def meta_client(db_pool):
         meta_app.dependency_overrides.clear()
 
 
+@pytest_asyncio.fixture
+async def override_user(meta_client):
+    """
+    Callable fixture: override_user(user_id) swaps the identity meta_client's
+    requests authenticate as, so tests can simulate a second, non-default user
+    (e.g. an attacker without access to another user's resources).
+    Restored automatically by meta_client's teardown.
+    """
+    from metadata_service.app.auth import get_current_user
+    from metadata_service.app.main import app as meta_app
+
+    def _set(user_id: str, email: str = "other@test.com"):
+        meta_app.dependency_overrides[get_current_user] = lambda: {
+            "user_id": user_id,
+            "email": email,
+        }
+
+    return _set
+
+
 # ─── Seed helpers (plain async functions — call from tests directly) ──────────
 
 

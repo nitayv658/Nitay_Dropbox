@@ -131,7 +131,6 @@ class RegisterRequest(BaseModel):
 
 
 class CreateDirectoryRequest(BaseModel):
-    user_id: str
     parent_folder_id: Optional[str] = None
     name: str = Field(..., min_length=1, max_length=255)
 
@@ -227,7 +226,13 @@ async def create_directory(
     req: CreateDirectoryRequest,
     user: dict = Depends(get_current_user),
 ):
-    folder_id = await db.create_directory(req.user_id, req.parent_folder_id, req.name)
+    if req.parent_folder_id:
+        permission = await db.get_folder_permission(user["user_id"], req.parent_folder_id)
+        if permission not in ("owner", "write"):
+            raise HTTPException(
+                status_code=403, detail="write access to parent_folder_id required"
+            )
+    folder_id = await db.create_directory(user["user_id"], req.parent_folder_id, req.name)
     log.info("directory_created", folder_id=folder_id)
     return {"folder_id": folder_id}
 
