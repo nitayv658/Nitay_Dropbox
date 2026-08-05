@@ -123,6 +123,23 @@ class MetadataServiceServicer(internal_pb2_grpc.MetadataServiceServicer):
 class SyncServiceServicer(internal_pb2_grpc.SyncServiceServicer):
 
     async def GetMissingBlocks(self, request, context):
+        user = get_authenticated_user()
+        device_owner = await db.get_device_owner(request.device_id)
+        if device_owner != user["user_id"]:
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "device does not belong to the authenticated user",
+            )
+        folder_id = await db.get_file_folder_id(request.file_id)
+        if folder_id is None:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "file not found")
+        permission = await db.get_folder_permission(user["user_id"], folder_id)
+        if permission is None:
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "access to this file's folder required",
+            )
+
         from_version = request.from_version_id or None
         try:
             missing = await db.get_missing_blocks(

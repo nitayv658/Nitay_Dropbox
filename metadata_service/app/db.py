@@ -301,6 +301,13 @@ async def get_current_version_id(file_id: str) -> Optional[str]:
 # ─── Sync ─────────────────────────────────────────────────────────────────────
 
 
+async def get_device_owner(device_id: str) -> Optional[str]:
+    """Return the user_id that owns this device, or None if it doesn't exist."""
+    return await pool.fetchval(
+        "SELECT user_id::text FROM devices WHERE id = $1::uuid", device_id
+    )
+
+
 async def get_missing_blocks(
     device_id: str, file_id: str, from_version_id: Optional[str]
 ) -> List[str]:
