@@ -15,6 +15,7 @@ message UploadBlockRequest {
 message UploadBlockResponse {
   bool stored = 1; // true if stored, false if deduped
   string s3_key = 2;
+  bytes data = 3; // populated only when streamed by GetBlock
 }
 
 message HasBlockRequest { string hash = 1; }
