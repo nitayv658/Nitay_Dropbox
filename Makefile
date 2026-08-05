@@ -3,7 +3,7 @@ PYTEST        = $(PYTHON) -m pytest
 TEST_DB_URL  ?= postgresql://postgres:password@localhost:5432/dropboxsim_test
 COV_MODULES   = --cov=block_server --cov=metadata_service --cov=client_utils
 
-.PHONY: install install-test-deps test coverage \
+.PHONY: install install-test-deps test coverage generate-proto \
         test-chunker test-dedup test-conflict test-resume test-stress \
         docker-up docker-down docker-logs docker-build docker-clean \
         lint format
@@ -17,6 +17,31 @@ install:
 
 install-test-deps:
 	pip install -r tests/requirements.txt
+
+## ── Protobuf / gRPC ──────────────────────────────────────────────────────────
+#
+# grpc_tools.protoc generates a flat `import internal_pb2 as internal__pb2`
+# in the _grpc.py file, which breaks under the package-relative imports the
+# gRPC servers use (`from . import internal_pb2, internal_pb2_grpc`). The sed
+# patch below fixes that — see metadata_service/app/grpc_server.py's docstring.
+
+generate-proto:
+	$(PYTHON) -m grpc_tools.protoc \
+		-I proto \
+		--python_out=metadata_service/app \
+		--grpc_python_out=metadata_service/app \
+		proto/internal.proto
+	sed -i.bak 's/^import internal_pb2 as internal__pb2$$/from . import internal_pb2 as internal__pb2/' \
+		metadata_service/app/internal_pb2_grpc.py
+	rm -f metadata_service/app/internal_pb2_grpc.py.bak
+	$(PYTHON) -m grpc_tools.protoc \
+		-I proto \
+		--python_out=proto \
+		--grpc_python_out=proto \
+		proto/internal.proto
+	sed -i.bak 's/^import internal_pb2 as internal__pb2$$/from . import internal_pb2 as internal__pb2/' \
+		proto/internal_pb2_grpc.py
+	rm -f proto/internal_pb2_grpc.py.bak
 
 ## ── Tests ────────────────────────────────────────────────────────────────────
 

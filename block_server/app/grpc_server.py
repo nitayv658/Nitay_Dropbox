@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import os
 from concurrent import futures
 
 import grpc
@@ -52,14 +51,13 @@ class BlockServerServicer(pb2_grpc.BlockServerServicer):
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details('block not found')
             return
-        path = row['s3_key']
-        if not os.path.exists(path):
+        try:
+            data, path = storage.read_block(hash_hex)
+        except FileNotFoundError:
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details('block missing on storage')
             return
-        # read and stream as single response (proto defines stream of UploadBlockResponse)
-        with open(path, 'rb') as f:
-            data = f.read()
+        # stream as single response (proto defines stream of UploadBlockResponse)
         yield pb2.UploadBlockResponse(stored=True, s3_key=path, data=data)
 
 

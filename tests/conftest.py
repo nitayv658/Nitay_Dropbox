@@ -11,6 +11,8 @@ giving each test a perfectly clean slate without the overhead of schema recreati
 """
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +31,48 @@ TEST_DB_URL = os.getenv(
 _SCHEMA_SQL = (
     Path(__file__).parent.parent / "schema" / "sql" / "schema.sql"
 ).read_text()
+
+_REPO_ROOT = Path(__file__).parent.parent
+
+
+def _generate_grpc_stubs(out_dir: str) -> None:
+    subprocess.run(
+        [
+            sys.executable, "-m", "grpc_tools.protoc",
+            "-I", "proto",
+            f"--python_out={out_dir}",
+            f"--grpc_python_out={out_dir}",
+            "proto/internal.proto",
+        ],
+        cwd=_REPO_ROOT,
+        check=True,
+    )
+    grpc_stub = _REPO_ROOT / out_dir / "internal_pb2_grpc.py"
+    text = grpc_stub.read_text()
+    grpc_stub.write_text(
+        text.replace(
+            "import internal_pb2 as internal__pb2",
+            "from . import internal_pb2 as internal__pb2",
+        )
+    )
+
+
+def _ensure_grpc_stubs() -> None:
+    """
+    Generate internal_pb2*.py from proto/internal.proto into both locations
+    the gRPC servers import them from (metadata_service/app/ and proto/
+    itself — block_server/app/grpc_server.py does `from proto import ...`)
+    if they're not already present, so gRPC test modules can import them at
+    collection time. Mirrors `make generate-proto`, including the sed-style
+    patch for grpc_tools' flat `import internal_pb2` (see Makefile).
+    """
+    if not (_REPO_ROOT / "metadata_service" / "app" / "internal_pb2_grpc.py").exists():
+        _generate_grpc_stubs("metadata_service/app")
+    if not (_REPO_ROOT / "proto" / "internal_pb2_grpc.py").exists():
+        _generate_grpc_stubs("proto")
+
+
+_ensure_grpc_stubs()
 
 
 # ─── Database pool ────────────────────────────────────────────────────────────
@@ -168,6 +212,35 @@ async def override_user(meta_client):
         }
 
     return _set
+
+
+# ─── gRPC test server ──────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture
+async def block_grpc_server_address(db_pool, in_memory_storage):
+    """
+    Starts block_server's gRPC server on an ephemeral localhost port, wired to
+    the shared test db pool and in-memory storage. Yields the "host:port"
+    address for a test client channel.
+    """
+    import grpc
+
+    import block_server.app.db as bdb
+    from block_server.app.grpc_server import BlockServerServicer
+    from proto import internal_pb2_grpc as block_pb2_grpc
+
+    bdb.pool = db_pool
+
+    server = grpc.aio.server()
+    block_pb2_grpc.add_BlockServerServicer_to_server(BlockServerServicer(), server)
+
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    try:
+        yield f"127.0.0.1:{port}"
+    finally:
+        await server.stop(None)
 
 
 # ─── Seed helpers (plain async functions — call from tests directly) ──────────
