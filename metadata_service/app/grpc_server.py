@@ -171,11 +171,19 @@ class SharingServiceServicer(internal_pb2_grpc.SharingServiceServicer):
             await context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT, "permission must be 'read' or 'write'"
             )
+        user = get_authenticated_user()
+        caller_permission = await db.get_folder_permission(
+            user["user_id"], request.folder_id
+        )
+        if caller_permission != "owner":
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED, "folder owner access required"
+            )
         ttl = request.ttl_seconds if request.ttl_seconds > 0 else None
         try:
             result = await db.create_share_link(
                 folder_id=request.folder_id,
-                created_by=None,
+                created_by=user["user_id"],
                 permission=request.permission,
                 ttl_seconds=ttl,
             )
