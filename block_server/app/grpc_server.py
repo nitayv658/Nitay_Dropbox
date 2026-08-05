@@ -10,6 +10,7 @@ from proto import internal_pb2 as pb2
 from proto import internal_pb2_grpc as pb2_grpc
 
 from . import db, storage
+from .grpc_auth import ServiceKeyInterceptor
 
 
 class BlockServerServicer(pb2_grpc.BlockServerServicer):
@@ -64,7 +65,7 @@ class BlockServerServicer(pb2_grpc.BlockServerServicer):
 
 
 async def serve(host='0.0.0.0', port=50051):
-    server = aio.server()
+    server = aio.server(interceptors=[ServiceKeyInterceptor()])
     pb2_grpc.add_BlockServerServicer_to_server(BlockServerServicer(), server)
     server.add_insecure_port(f"{host}:{port}")
     await db.init_db()

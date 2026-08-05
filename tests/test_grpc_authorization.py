@@ -7,12 +7,17 @@ Uses a real in-process grpc.aio server + channel (grpc_server_address fixture
 in conftest.py) — no mocking of the gRPC transport itself.
 """
 
+import hashlib
+
 import grpc
 import pytest
 
 import metadata_service.app.db as mdb
 from metadata_service.app import internal_pb2, internal_pb2_grpc
 from metadata_service.app.auth import create_access_token
+from block_server.app.config import settings as block_settings
+from proto import internal_pb2 as block_pb2
+from proto import internal_pb2_grpc as block_pb2_grpc
 from tests.conftest import seed_folder, seed_user
 
 
@@ -401,3 +406,82 @@ async def test_grpc_create_share_link_allowed_for_owner(grpc_server_address, db_
         "SELECT created_by::text FROM share_links WHERE token = $1", resp.token
     )
     assert created_by == owner
+
+
+# ─── block_server gRPC: BlockServer service-key auth ───────────────────────────
+
+
+async def test_grpc_upload_block_denied_without_service_key(
+    block_grpc_server_address, monkeypatch
+):
+    monkeypatch.setattr(block_settings, "service_api_key", "test-secret-key")
+    data = b"hello world"
+    h = hashlib.sha256(data).hexdigest()
+
+    async with grpc.aio.insecure_channel(block_grpc_server_address) as channel:
+        stub = block_pb2_grpc.BlockServerStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            await stub.UploadBlock(
+                block_pb2.UploadBlockRequest(hash=h, size=len(data), data=data)
+            )
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+async def test_grpc_upload_block_allowed_with_correct_service_key(
+    block_grpc_server_address, monkeypatch
+):
+    monkeypatch.setattr(block_settings, "service_api_key", "test-secret-key")
+    data = b"hello world"
+    h = hashlib.sha256(data).hexdigest()
+
+    async with grpc.aio.insecure_channel(block_grpc_server_address) as channel:
+        stub = block_pb2_grpc.BlockServerStub(channel)
+        resp = await stub.UploadBlock(
+            block_pb2.UploadBlockRequest(hash=h, size=len(data), data=data),
+            metadata=(("x-service-key", "test-secret-key"),),
+        )
+
+    assert resp.stored is True
+
+
+async def test_grpc_upload_block_allowed_when_service_key_unset(
+    block_grpc_server_address,
+):
+    """Default settings.service_api_key is "" — enforcement disabled (dev/test mode)."""
+    data = b"hello world unset key"
+    h = hashlib.sha256(data).hexdigest()
+
+    async with grpc.aio.insecure_channel(block_grpc_server_address) as channel:
+        stub = block_pb2_grpc.BlockServerStub(channel)
+        resp = await stub.UploadBlock(
+            block_pb2.UploadBlockRequest(hash=h, size=len(data), data=data)
+        )
+
+    assert resp.stored is True
+
+
+async def test_grpc_has_block_never_requires_service_key(
+    block_grpc_server_address, monkeypatch
+):
+    monkeypatch.setattr(block_settings, "service_api_key", "test-secret-key")
+
+    async with grpc.aio.insecure_channel(block_grpc_server_address) as channel:
+        stub = block_pb2_grpc.BlockServerStub(channel)
+        resp = await stub.HasBlock(block_pb2.HasBlockRequest(hash="0" * 64))
+
+    assert resp.exists is False
+
+
+async def test_grpc_get_block_denied_without_service_key(
+    block_grpc_server_address, monkeypatch
+):
+    monkeypatch.setattr(block_settings, "service_api_key", "test-secret-key")
+
+    async with grpc.aio.insecure_channel(block_grpc_server_address) as channel:
+        stub = block_pb2_grpc.BlockServerStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+            async for _ in stub.GetBlock(block_pb2.HasBlockRequest(hash="0" * 64)):
+                pass
+
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED

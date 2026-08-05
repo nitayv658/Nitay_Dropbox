@@ -35,28 +35,19 @@ _SCHEMA_SQL = (
 _REPO_ROOT = Path(__file__).parent.parent
 
 
-def _ensure_grpc_stubs() -> None:
-    """
-    Generate metadata_service/app/internal_pb2*.py from proto/internal.proto
-    if they're not already present, so gRPC test modules can import them at
-    collection time. Mirrors `make generate-proto`, including the sed-style
-    patch for grpc_tools' flat `import internal_pb2` (see Makefile).
-    """
-    grpc_stub = _REPO_ROOT / "metadata_service" / "app" / "internal_pb2_grpc.py"
-    if grpc_stub.exists():
-        return
-
+def _generate_grpc_stubs(out_dir: str) -> None:
     subprocess.run(
         [
             sys.executable, "-m", "grpc_tools.protoc",
             "-I", "proto",
-            "--python_out=metadata_service/app",
-            "--grpc_python_out=metadata_service/app",
+            f"--python_out={out_dir}",
+            f"--grpc_python_out={out_dir}",
             "proto/internal.proto",
         ],
         cwd=_REPO_ROOT,
         check=True,
     )
+    grpc_stub = _REPO_ROOT / out_dir / "internal_pb2_grpc.py"
     text = grpc_stub.read_text()
     grpc_stub.write_text(
         text.replace(
@@ -64,6 +55,21 @@ def _ensure_grpc_stubs() -> None:
             "from . import internal_pb2 as internal__pb2",
         )
     )
+
+
+def _ensure_grpc_stubs() -> None:
+    """
+    Generate internal_pb2*.py from proto/internal.proto into both locations
+    the gRPC servers import them from (metadata_service/app/ and proto/
+    itself — block_server/app/grpc_server.py does `from proto import ...`)
+    if they're not already present, so gRPC test modules can import them at
+    collection time. Mirrors `make generate-proto`, including the sed-style
+    patch for grpc_tools' flat `import internal_pb2` (see Makefile).
+    """
+    if not (_REPO_ROOT / "metadata_service" / "app" / "internal_pb2_grpc.py").exists():
+        _generate_grpc_stubs("metadata_service/app")
+    if not (_REPO_ROOT / "proto" / "internal_pb2_grpc.py").exists():
+        _generate_grpc_stubs("proto")
 
 
 _ensure_grpc_stubs()
@@ -239,6 +245,33 @@ async def grpc_server_address(db_pool):
     internal_pb2_grpc.add_SharingServiceServicer_to_server(
         SharingServiceServicer(), server
     )
+
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    try:
+        yield f"127.0.0.1:{port}"
+    finally:
+        await server.stop(None)
+
+
+@pytest_asyncio.fixture
+async def block_grpc_server_address(db_pool, in_memory_storage):
+    """
+    Starts block_server's gRPC server (with ServiceKeyInterceptor wired) on an
+    ephemeral localhost port, wired to the shared test db pool and in-memory
+    storage. Yields the "host:port" address for a test client channel.
+    """
+    import grpc
+
+    import block_server.app.db as bdb
+    from block_server.app.grpc_auth import ServiceKeyInterceptor
+    from block_server.app.grpc_server import BlockServerServicer
+    from proto import internal_pb2_grpc as block_pb2_grpc
+
+    bdb.pool = db_pool
+
+    server = grpc.aio.server(interceptors=[ServiceKeyInterceptor()])
+    block_pb2_grpc.add_BlockServerServicer_to_server(BlockServerServicer(), server)
 
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
